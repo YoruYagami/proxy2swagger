@@ -1,11 +1,12 @@
 # 🌐 proxy2swagger
 
-proxy2swagger is a Burp Suite extension that generates Swagger (OpenAPI) specifications from proxy history, simplifying API documentation and testing.
-
 <p align="center">
   <a href="#"><img alt="starsBDG" src="https://img.shields.io/github/stars/YoruYagami/proxy2swagger?style=for-the-badge"></a>
   <a href="#"><img alt="licenseBDG" src="https://img.shields.io/github/license/YoruYagami/proxy2swagger?style=for-the-badge"></a>
   <a href="#"><img alt="languageBDG" src="https://img.shields.io/badge/LANGUAGE-Python3-blue?style=for-the-badge"></a>
+</p>
+
+proxy2swagger is a Burp Suite extension that generates Swagger (OpenAPI) specifications from proxy history, simplifying API documentation and testing.
 
 ## ✨ Features
 
