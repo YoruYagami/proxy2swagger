@@ -1,37 +1,37 @@
-from burp import IBurpExtender, ITab, IProxyListener, IInterceptedProxyMessage, IHttpRequestResponse
-from javax.swing import JPanel, JButton, JTextArea, JScrollPane, JTextField, JFileChooser, JOptionPane, JLabel, JTabbedPane
-from java.awt import BorderLayout, FlowLayout
-import json
+# -*- coding: utf-8 -*-
+from burp import IBurpExtender, ITab, IProxyListener, IScannerListener, IHttpRequestResponse
+from javax.swing import JPanel, JButton, JTextArea, JScrollPane, JTextField, JFileChooser, JOptionPane, JLabel, JTabbedPane, JSplitPane, SwingUtilities
+from java.awt import BorderLayout, FlowLayout, Dimension
+import json, os
 
-class BurpExtender(IBurpExtender, ITab, IProxyListener):
+class BurpExtender(IBurpExtender, ITab, IProxyListener, IScannerListener):
 
     def registerExtenderCallbacks(self, callbacks):
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
-        self._callbacks.setExtensionName("Swagger Integration")
+        self._callbacks.setExtensionName("Dynamic OpenAPI Generator")
 
-        # Initialize the Swagger data structure
+        # Initialize the OpenAPI (Swagger) data structure.
         self.initialize_swagger_data()
 
-        # Create tabs
+        # Build the UI.
         self._tabbedPane = JTabbedPane()
+        self._mainPanel = self.create_main_panel()
+        self._tabbedPane.addTab("OpenAPI", self._mainPanel)
 
-        # Swagger Tab
-        self._swaggerPanel = self.create_swagger_panel()
-        self._tabbedPane.addTab("Swagger", self._swaggerPanel)
-
-        # Register UI components
+        # Register UI and listeners.
         self._callbacks.addSuiteTab(self)
         self._callbacks.registerProxyListener(self)
+        self._callbacks.registerScannerListener(self)
 
+    # ITab interface.
     def getTabCaption(self):
-        return "Swagger"
+        return "OpenAPI"
 
     def getUiComponent(self):
         return self._tabbedPane
 
     def initialize_swagger_data(self):
-        """Initialize Swagger data with default values, including host from in-scope URLs."""
         host = self.get_in_scope_host()
         self.swagger_data = {
             "openapi": "3.0.0",
@@ -41,14 +41,8 @@ class BurpExtender(IBurpExtender, ITab, IProxyListener):
                 "version": "1.0.0"
             },
             "servers": [
-                {
-                    "url": "http://{}".format(host),
-                    "description": "HTTP server"
-                },
-                {
-                    "url": "https://{}".format(host),
-                    "description": "HTTPS server"
-                }
+                {"url": "http://{}".format(host), "description": "HTTP server"},
+                {"url": "https://{}".format(host), "description": "HTTPS server"}
             ],
             "paths": {},
             "components": {
@@ -60,150 +54,168 @@ class BurpExtender(IBurpExtender, ITab, IProxyListener):
                     }
                 }
             },
-            "security": [
-                {
-                    "Bearer": []
-                }
-            ]
+            "security": [{"Bearer": []}]
         }
 
     def get_in_scope_host(self):
-        """Retrieve the host from in-scope URLs."""
         history = self._callbacks.getProxyHistory()
-        in_scope_urls = [self._helpers.analyzeRequest(message).getUrl() for message in history if self._callbacks.isInScope(self._helpers.analyzeRequest(message).getUrl())]
-        if in_scope_urls:
-            return in_scope_urls[0].getHost()
-        else:
-            return "localhost"  # Fallback if no in-scope URLs found
+        for message in history:
+            reqInfo = self._helpers.analyzeRequest(message)
+            url = reqInfo.getUrl()
+            if self._callbacks.isInScope(url):
+                return url.getHost()
+        return "localhost"
 
-    def create_swagger_panel(self):
-        """Create the UI panel for Swagger management."""
-        panel = JPanel(BorderLayout())
+    def create_main_panel(self):
+        mainPanel = JPanel(BorderLayout())
+
+        # Toolbar panel at the top.
+        toolbar = JPanel(FlowLayout(FlowLayout.LEFT))
+        self._hostField = JTextField(self.get_in_scope_host(), 15)
+        btnUpdateHost = JButton("Update Host", actionPerformed=self.update_host)
+        btnLoadInScope = JButton("Load In-Scope", actionPerformed=self.load_in_scope)
+        btnSave = JButton("Save OpenAPI", actionPerformed=self.save_swagger_file)
+        btnAutoExport = JButton("Auto-Export", actionPerformed=self.auto_export)
+        btnApplyChanges = JButton("Apply Changes", actionPerformed=self.apply_changes)
+
+        toolbar.add(JLabel("Host:"))
+        toolbar.add(self._hostField)
+        toolbar.add(btnUpdateHost)
+        toolbar.add(btnLoadInScope)
+        toolbar.add(btnSave)
+        toolbar.add(btnAutoExport)
+        toolbar.add(btnApplyChanges)
+        mainPanel.add(toolbar, BorderLayout.NORTH)
+
+        # Center pane: JSON preview/editor area.
         self._textArea = JTextArea()
-        self._scrollPane = JScrollPane(self._textArea)
-        buttonPanel = JPanel(FlowLayout())
+        self._textArea.setEditable(True)
+        jsonScroll = JScrollPane(self._textArea)
+        mainPanel.add(jsonScroll, BorderLayout.CENTER)
 
-        # Host field
-        self._hostField = JTextField(self.get_in_scope_host(), 20)
-        buttonUpdateHost = JButton("Update Host", actionPerformed=self.update_host)
-        buttonSave = JButton("Save Swagger", actionPerformed=self.save_swagger_file)
-        buttonLoadInScope = JButton("Load History from In-Scope", actionPerformed=self.load_in_scope)
+        # Status bar at the bottom.
+        self._statusLabel = JLabel("Ready")
+        mainPanel.add(self._statusLabel, BorderLayout.SOUTH)
 
-        buttonPanel.add(JLabel("Host:"))
-        buttonPanel.add(self._hostField)
-        buttonPanel.add(buttonUpdateHost)
-        buttonPanel.add(buttonLoadInScope)
-        buttonPanel.add(buttonSave)
-        panel.add(self._scrollPane, BorderLayout.CENTER)
-        panel.add(buttonPanel, BorderLayout.SOUTH)
-
+        # Initialize display.
         self.update_text_area()
-        return panel
+        return mainPanel
 
     def update_text_area(self):
-        """Update the text area with the current Swagger JSON data."""
         formatted_data = json.dumps(self.swagger_data, indent=4)
         self._textArea.setText(formatted_data)
+        self._textArea.setCaretPosition(0)
 
     def update_host(self, event):
-        """Update the host in the Swagger data based on the user's input."""
         new_host = self._hostField.getText().strip()
         if new_host:
             self.swagger_data["servers"] = [
-                {
-                    "url": "http://{}".format(new_host),
-                    "description": "HTTP server"
-                },
-                {
-                    "url": "https://{}".format(new_host),
-                    "description": "HTTPS server"
-                }
+                {"url": "http://{}".format(new_host), "description": "HTTP server"},
+                {"url": "https://{}".format(new_host), "description": "HTTPS server"}
             ]
             self.update_text_area()
+            self._statusLabel.setText("Updated host to: {}".format(new_host))
 
     def save_swagger_file(self, event):
-        """Save the current Swagger JSON to a file."""
         chooser = JFileChooser()
         ret = chooser.showSaveDialog(self._textArea)
         if ret == JFileChooser.APPROVE_OPTION:
             file = chooser.getSelectedFile()
             filepath = file.getAbsolutePath()
+            # Append .json if not already present.
+            if not filepath.lower().endswith(".json"):
+                filepath += ".json"
             try:
                 swagger_data = json.loads(self._textArea.getText())
                 with open(filepath, 'w') as f:
                     f.write(json.dumps(swagger_data, indent=4))
-                JOptionPane.showMessageDialog(self._textArea, "Swagger file saved successfully.")
+                JOptionPane.showMessageDialog(self._textArea, "OpenAPI file saved successfully.")
+                self._statusLabel.setText("Saved OpenAPI spec to: {}".format(filepath))
             except Exception as e:
                 JOptionPane.showMessageDialog(self._textArea, "Error saving file: {}".format(e))
+                self._statusLabel.setText("Error saving file.")
+
+    def auto_export(self, event):
+        default_path = os.path.join(os.path.expanduser("~"), "generated_openapi.json")
+        try:
+            with open(default_path, 'w') as f:
+                f.write(json.dumps(self.swagger_data, indent=4))
+            JOptionPane.showMessageDialog(self._textArea, "Auto-exported OpenAPI spec to:\n{}".format(default_path))
+            self._statusLabel.setText("Auto-exported spec to: {}".format(default_path))
+        except Exception as e:
+            JOptionPane.showMessageDialog(self._textArea, "Auto-export error: {}".format(e))
+            self._statusLabel.setText("Auto-export error.")
+
+    def apply_changes(self, event):
+        """
+        Allow the user to edit the JSON in the text area and then apply those changes to update
+        the internal swagger_data. If the JSON is invalid, display an error message.
+        """
+        try:
+            new_data = json.loads(self._textArea.getText())
+            self.swagger_data = new_data
+            self._statusLabel.setText("Applied changes from JSON editor.")
+        except Exception as e:
+            JOptionPane.showMessageDialog(self._textArea, "Invalid JSON: {}".format(e))
+            self._statusLabel.setText("Error applying changes.")
 
     def load_in_scope(self, event=None):
-        """Load and update Swagger data based on in-scope proxy history."""
         try:
-            # Clear existing paths
             self.swagger_data["paths"].clear()
-            # Retrieve the proxy history
             history = self._callbacks.getProxyHistory()
             for message in history:
-                # Check if the message is in scope
                 analyzed_message = self._helpers.analyzeRequest(message)
                 url = analyzed_message.getUrl()
                 if self._callbacks.isInScope(url):
                     self.update_swagger(message)
             self.update_text_area()
+            self._statusLabel.setText("Loaded in-scope history; updated endpoints.")
         except Exception as e:
             JOptionPane.showMessageDialog(self._textArea, "Error loading in-scope data: {}".format(e))
+            self._statusLabel.setText("Error loading in-scope data.")
 
     def update_swagger(self, messageInfo):
-        """Update the Swagger paths based on the intercepted proxy messages."""
         try:
             if isinstance(messageInfo, IHttpRequestResponse):
-                requestInfo = self._helpers.analyzeRequest(messageInfo)
-                responseInfo = self._helpers.analyzeResponse(messageInfo.getResponse())
-                url = requestInfo.getUrl()
-                method = requestInfo.getMethod().lower()
+                reqInfo = self._helpers.analyzeRequest(messageInfo)
+                response_bytes = messageInfo.getResponse()
+                if response_bytes is None:
+                    return
+                respInfo = self._helpers.analyzeResponse(response_bytes)
+                url = reqInfo.getUrl()
+                method = reqInfo.getMethod().lower()
                 path = url.getPath()
 
-                # Build a basic Swagger path entry
                 if path not in self.swagger_data["paths"]:
                     self.swagger_data["paths"][path] = {}
-
-                # Initialize method data
                 if method not in self.swagger_data["paths"][path]:
-                    self.swagger_data["paths"][path][method] = {
-                        "parameters": [],
-                        "responses": {}
-                    }
+                    self.swagger_data["paths"][path][method] = {"parameters": [], "responses": {}}
 
-                # Handle query parameters
-                for param in requestInfo.getParameters():
-                    if param.getType() == 0:  # 0 for QUERY parameters
-                        self.swagger_data["paths"][path][method]["parameters"].append({
-                            "name": param.getName(),
-                            "in": "query",
-                            "required": True,  # Assuming query params are required
-                            "schema": {
-                                "type": "string"
-                            }
-                        })
+                for param in reqInfo.getParameters():
+                    if param.getType() == 0:  # Query parameter.
+                        if not any(p["name"] == param.getName() for p in self.swagger_data["paths"][path][method]["parameters"]):
+                            self.swagger_data["paths"][path][method]["parameters"].append({
+                                "name": param.getName(),
+                                "in": "query",
+                                "required": True,
+                                "schema": {"type": "string"}
+                            })
 
-                # Infer response description based on status code
-                status_code = str(responseInfo.getStatusCode())
+                status_code = str(respInfo.getStatusCode())
                 description = self.get_response_description(status_code)
                 self.swagger_data["paths"][path][method]["responses"][status_code] = {
                     "description": description,
                     "content": {
                         "application/json": {
-                            "schema": {
-                                "type": "object"
-                            }
+                            "schema": {"type": "object"}
                         }
                     }
                 }
+                SwingUtilities.invokeLater(self.update_text_area)
         except Exception as e:
-            JOptionPane.showMessageDialog(self._textArea, "Error updating Swagger: {}".format(e))
+            JOptionPane.showMessageDialog(self._textArea, "Error updating OpenAPI spec: {}".format(e))
 
     def get_response_description(self, status_code):
-        """Provide descriptions for common HTTP status codes."""
         if status_code.startswith('2'):
             return "Successful response"
         elif status_code.startswith('4'):
@@ -212,7 +224,21 @@ class BurpExtender(IBurpExtender, ITab, IProxyListener):
             return "Server error"
         return "Response"
 
+    # IProxyListener interface.
     def processProxyMessage(self, messageIsRequest, message):
-        """Intercept and process proxy messages to update Swagger data."""
         if not messageIsRequest:
             self.update_swagger(message)
+            SwingUtilities.invokeLater(self.update_text_area)
+
+    # IScannerListener interface.
+    def newScanIssue(self, issue):
+        try:
+            httpMessages = issue.getHttpMessages()
+            if httpMessages:
+                for message in httpMessages:
+                    self.update_swagger(message)
+                SwingUtilities.invokeLater(self.update_text_area)
+                self._statusLabel.setText("Processed new scan issue.")
+        except Exception as e:
+            JOptionPane.showMessageDialog(self._textArea, "Error processing scan issue: {}".format(e))
+            self._statusLabel.setText("Error processing scan issue.")
